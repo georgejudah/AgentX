@@ -41,6 +41,7 @@ AGENTX_GROUNDING_HEIGHT="${AGENTX_GROUNDING_HEIGHT:-1080}"
 AGENTX_WAKE_PHRASE="${AGENTX_WAKE_PHRASE:-hey agent}"
 AGENTX_CAMERA="${AGENTX_CAMERA:-0}"
 AGENTX_NARRATE_VERBOSITY="${AGENTX_NARRATE_VERBOSITY:-full}"
+AGENTX_UI_PORT="${AGENTX_UI_PORT:-8765}"
 PICOVOICE_ACCESS_KEY="${PICOVOICE_ACCESS_KEY:-}"
 
 # ── OpenRouter shorthand ──────────────────────────────────────────────────────
@@ -78,6 +79,7 @@ echo "    🎤  Wake word     — say \"${AGENTX_WAKE_PHRASE}\" to give a task"
 echo "    👁️  Vision narrate — LLM describes each step from screenshots"
 echo "    📋  Task chaining  — say 'first X, then Y, then Z' for multi-task"
 echo "    ✋  Gestures      — open palm=PAUSE | fist=RESUME | 👍=APPROVE | 👎=CANCEL"
+echo "    🖥️  Control center — opens in your browser on port ${AGENTX_UI_PORT}"
 echo ""
 echo "  Press Ctrl+C to quit."
 echo ""
@@ -101,6 +103,8 @@ python -m gui_agents.s3.cli_app \
     --narrate-verbosity "${AGENTX_NARRATE_VERBOSITY}"  \
     --tts                                               \
     --gesture                                           \
+    --ui                                                \
+    --ui-port           "${AGENTX_UI_PORT}"            \
     --camera          "${AGENTX_CAMERA}"           \
     --enable_reflection                             \
     ${PICOVOICE_ARG}                                \

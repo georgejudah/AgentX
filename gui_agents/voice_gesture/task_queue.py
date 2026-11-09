@@ -20,6 +20,8 @@ import queue
 import re
 from typing import Optional
 
+from gui_agents.ui.events import bus
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -114,9 +116,13 @@ class TaskQueue:
         else:
             tasks = [instruction]
 
+        if self._q.empty():
+            self._total = 0
+            self._done = 0
         for t in tasks:
             self._q.put(t)
         self._total += len(tasks)
+        self._publish()
         return len(tasks)
 
     def next(self) -> tuple[str, int, int]:
@@ -126,7 +132,11 @@ class TaskQueue:
         """
         task = self._q.get_nowait()
         self._done += 1
+        self._publish()
         return task, self._done, self._total
+
+    def _publish(self):
+        bus.publish("queue", items=list(self._q.queue))
 
     def empty(self) -> bool:
         return self._q.empty()
@@ -142,3 +152,4 @@ class TaskQueue:
                 break
         self._total = 0
         self._done = 0
+        self._publish()
