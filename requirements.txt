@@ -20,4 +20,14 @@ google-genai
 # Platform-specific dependencies
 pyobjc; platform_system == "Darwin"
 pywinauto; platform_system == "Windows"
-pywin32; platform_system == "Windows" 
+pywin32; platform_system == "Windows"
+
+# Voice mode (optional — install to enable --voice and --tts)
+SpeechRecognition
+pyaudio
+pyttsx3
+openai-whisper  # offline STT fallback
+
+# Gesture mode (optional — install to enable --gesture)
+mediapipe
+opencv-python 

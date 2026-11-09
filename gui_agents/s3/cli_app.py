@@ -8,6 +8,7 @@ import pyautogui
 import signal
 import sys
 import time
+from typing import Optional
 
 from PIL import Image
 
@@ -19,6 +20,10 @@ current_platform = platform.system().lower()
 
 # Global flag to track pause state for debugging
 paused = False
+
+# Optional voice/gesture controllers (set in main() when flags are passed)
+_voice_input = None
+_gesture_ctrl = None
 
 
 def get_char():
@@ -152,14 +157,46 @@ def scale_screen_dimensions(width: int, height: int, max_dim_size: int):
     return safe_width, safe_height
 
 
+def _handle_gesture_commands():
+    """Poll gesture queue and apply any pending gesture commands."""
+    global paused, _gesture_ctrl
+    if _gesture_ctrl is None:
+        return
+    from gui_agents.voice_gesture.gesture_control import GestureCommand
+
+    cmd = _gesture_ctrl.get_command(timeout=0)
+    while cmd is not None:
+        if cmd == GestureCommand.PAUSE_AGENT:
+            if not paused:
+                print("\n✋ Gesture: PAUSED")
+                paused = True
+        elif cmd == GestureCommand.RESUME_AGENT:
+            if paused:
+                print("\n✊ Gesture: RESUMED")
+                paused = False
+        elif cmd == GestureCommand.APPROVE_ACTION:
+            print("\n👍 Gesture: APPROVE (continuing…)")
+        elif cmd == GestureCommand.CANCEL_TASK:
+            print("\n👎 Gesture: CANCEL — stopping task.")
+            raise KeyboardInterrupt("Gesture cancel")
+        elif cmd == GestureCommand.NEXT_STEP:
+            print("\n☝️  Gesture: NEXT STEP")
+        elif cmd == GestureCommand.SCREENSHOT:
+            print("\n✌️  Gesture: SCREENSHOT requested")
+        cmd = _gesture_ctrl.get_command(timeout=0)
+
+
 def run_agent(agent, instruction: str, scaled_width: int, scaled_height: int):
     global paused
     obs = {}
     traj = "Task:\n" + instruction
     subtask_traj = ""
     for step in range(15):
+        # Check gesture queue each step
+        _handle_gesture_commands()
         # Check if we're in paused state and wait
         while paused:
+            _handle_gesture_commands()
             time.sleep(0.1)
         # Get screen shot using pyautogui
         screenshot = pyautogui.screenshot()
@@ -321,7 +358,67 @@ def main():
         help="The task instruction for Agent-S3 to perform.",
     )
 
+    # ---- Voice mode ----
+    parser.add_argument(
+        "--voice",
+        action="store_true",
+        default=False,
+        help="Enable voice input (microphone) instead of keyboard for task queries.",
+    )
+    parser.add_argument(
+        "--tts",
+        action="store_true",
+        default=False,
+        help="Enable text-to-speech feedback when voice mode is active.",
+    )
+    parser.add_argument(
+        "--whisper-model",
+        type=str,
+        default="base",
+        dest="whisper_model",
+        help="Whisper model size for offline STT fallback (tiny/base/small/medium/large).",
+    )
+
+    # ---- Gesture mode ----
+    parser.add_argument(
+        "--gesture",
+        action="store_true",
+        default=False,
+        help="Enable webcam gesture control (MediaPipe Hands).",
+    )
+    parser.add_argument(
+        "--camera",
+        type=int,
+        default=0,
+        dest="camera_index",
+        help="Webcam device index for gesture control (default 0).",
+    )
+    parser.add_argument(
+        "--gesture-preview",
+        action="store_true",
+        default=False,
+        dest="gesture_preview",
+        help="Show live webcam preview window with gesture overlay.",
+    )
+
+    # ---- OpenRouter convenience ----
+    parser.add_argument(
+        "--openrouter-key",
+        type=str,
+        default="",
+        dest="openrouter_key",
+        help="OpenRouter API key (shorthand; sets --provider open_router and fills --model_api_key).",
+    )
+
     args = parser.parse_args()
+
+    # OpenRouter shorthand: set provider + key automatically
+    if args.openrouter_key:
+        if not args.model_url:
+            args.model_url = "https://openrouter.ai/api/v1"
+        args.provider = "open_router"
+        if not args.model_api_key:
+            args.model_api_key = args.openrouter_key
 
     # Re-scales screenshot size to ensure it fits in UI-TARS context limit
     screen_width, screen_height = pyautogui.size()
@@ -373,25 +470,73 @@ def main():
         enable_reflection=args.enable_reflection,
     )
 
+    # ---- Voice input setup ----
+    global _voice_input
+    if args.voice:
+        from gui_agents.voice_gesture.voice_input import VoiceInput
+        _voice_input = VoiceInput(
+            tts=args.tts,
+            whisper_model=args.whisper_model,
+        )
+        print("🎙️  Voice mode enabled. Speak your task when prompted.")
+        if args.tts:
+            print("🔊  Text-to-speech enabled.")
+
+    # ---- Gesture control setup ----
+    global _gesture_ctrl
+    if args.gesture:
+        from gui_agents.voice_gesture.gesture_control import GestureControl
+        _gesture_ctrl = GestureControl(
+            camera_index=args.camera_index,
+            show_preview=args.gesture_preview,
+        )
+        _gesture_ctrl.start()
+        print("✋  Gesture control enabled.")
+        print("    Open palm=PAUSE | Fist=RESUME | 👍=APPROVE | 👎=CANCEL | ✌️=SCREENSHOT | ☝️=NEXT")
+
     task = args.task
 
-    # handle query from command line
-    if isinstance(task, str) and task.strip():
-        agent.reset()
-        run_agent(agent, task, scaled_width, scaled_height)
-        return
+    try:
+        # handle query from command line
+        if isinstance(task, str) and task.strip():
+            agent.reset()
+            if _voice_input:
+                _voice_input.speak(f"Starting task: {task}")
+            run_agent(agent, task, scaled_width, scaled_height)
+            if _voice_input:
+                _voice_input.speak("Task finished.")
+            return
 
-    while True:
-        query = input("Query: ")
+        while True:
+            if args.voice and _voice_input:
+                query = _voice_input.listen(prompt="Say your task…")
+                if not query:
+                    print("No speech detected, try again.")
+                    continue
+            else:
+                query = input("Query: ")
 
-        agent.reset()
+            agent.reset()
 
-        # Run the agent on your own device
-        run_agent(agent, query, scaled_width, scaled_height)
+            if _voice_input:
+                _voice_input.speak(f"Starting: {query}")
 
-        response = input("Would you like to provide another query? (y/n): ")
-        if response.lower() != "y":
-            break
+            run_agent(agent, query, scaled_width, scaled_height)
+
+            if _voice_input:
+                _voice_input.speak("Task finished. Say another task or say quit.")
+                cont = _voice_input.listen(prompt="Say 'yes' to continue or 'quit' to stop…")
+                if cont and "quit" in cont.lower():
+                    break
+            else:
+                response = input("Would you like to provide another query? (y/n): ")
+                if response.lower() != "y":
+                    break
+    finally:
+        if _gesture_ctrl:
+            _gesture_ctrl.stop()
+        if _voice_input:
+            _voice_input.close()
 
 
 if __name__ == "__main__":
