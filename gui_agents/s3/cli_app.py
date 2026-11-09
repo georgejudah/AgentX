@@ -21,9 +21,15 @@ current_platform = platform.system().lower()
 # Global flag to track pause state for debugging
 paused = False
 
-# Optional voice/gesture controllers (set in main() when flags are passed)
+# Optional voice/gesture/narration controllers (set in main() when flags are passed)
 _voice_input = None
 _gesture_ctrl = None
+_narrator = None
+_wake_listener = None
+
+# Queue for tasks issued via wake word
+import queue as _queue
+_wake_task_queue: _queue.Queue = _queue.Queue()
 
 
 def get_char():
@@ -159,7 +165,7 @@ def scale_screen_dimensions(width: int, height: int, max_dim_size: int):
 
 def _handle_gesture_commands():
     """Poll gesture queue and apply any pending gesture commands."""
-    global paused, _gesture_ctrl
+    global paused, _gesture_ctrl, _narrator
     if _gesture_ctrl is None:
         return
     from gui_agents.voice_gesture.gesture_control import GestureCommand
@@ -170,6 +176,8 @@ def _handle_gesture_commands():
             if not paused:
                 print("\n✋ Gesture: PAUSED")
                 paused = True
+                if _narrator:
+                    _narrator.announce_pause()
         elif cmd == GestureCommand.RESUME_AGENT:
             if paused:
                 print("\n✊ Gesture: RESUMED")
@@ -178,6 +186,8 @@ def _handle_gesture_commands():
             print("\n👍 Gesture: APPROVE (continuing…)")
         elif cmd == GestureCommand.CANCEL_TASK:
             print("\n👎 Gesture: CANCEL — stopping task.")
+            if _narrator:
+                _narrator.announce_cancel()
             raise KeyboardInterrupt("Gesture cancel")
         elif cmd == GestureCommand.NEXT_STEP:
             print("\n☝️  Gesture: NEXT STEP")
@@ -187,10 +197,14 @@ def _handle_gesture_commands():
 
 
 def run_agent(agent, instruction: str, scaled_width: int, scaled_height: int):
-    global paused
+    global paused, _narrator
     obs = {}
     traj = "Task:\n" + instruction
     subtask_traj = ""
+
+    if _narrator:
+        _narrator.announce_start(instruction)
+
     for step in range(15):
         # Check gesture queue each step
         _handle_gesture_commands()
@@ -220,7 +234,16 @@ def run_agent(agent, instruction: str, scaled_width: int, scaled_height: int):
         # Get next action code from the agent
         info, code = agent.predict(instruction=instruction, observation=obs)
 
+        # Narrate what the agent is about to do
+        if _narrator:
+            _narrator.announce_step(step, info, code)
+
         if "done" in code[0].lower() or "fail" in code[0].lower():
+            if _narrator:
+                if "fail" in code[0].lower():
+                    _narrator.announce_fail()
+                else:
+                    _narrator.announce_done(instruction)
             if platform.system() == "Darwin":
                 os.system(
                     f'osascript -e \'display dialog "Task Completed" with title "OpenACI Agent" buttons "OK" default button "OK"\''
@@ -237,6 +260,8 @@ def run_agent(agent, instruction: str, scaled_width: int, scaled_height: int):
 
         if "wait" in code[0].lower():
             print("⏳ Agent requested wait...")
+            if _narrator:
+                _narrator.announce_wait()
             time.sleep(5)
             continue
 
@@ -372,11 +397,48 @@ def main():
         help="Enable text-to-speech feedback when voice mode is active.",
     )
     parser.add_argument(
+        "--narrate",
+        action="store_true",
+        default=False,
+        help="Speak every step the agent takes aloud (requires --tts).",
+    )
+    parser.add_argument(
+        "--narrate-verbosity",
+        type=str,
+        default="full",
+        dest="narrate_verbosity",
+        choices=["full", "action", "minimal"],
+        help="Narration detail level: full (reflection+action), action, or minimal.",
+    )
+    parser.add_argument(
         "--whisper-model",
         type=str,
         default="base",
         dest="whisper_model",
         help="Whisper model size for offline STT fallback (tiny/base/small/medium/large).",
+    )
+
+    # ---- Wake word ----
+    parser.add_argument(
+        "--wake-word",
+        action="store_true",
+        default=False,
+        dest="wake_word",
+        help="Enable always-on wake word listener ('hey agent' by default).",
+    )
+    parser.add_argument(
+        "--wake-phrase",
+        type=str,
+        default="hey agent",
+        dest="wake_phrase",
+        help="The wake phrase to listen for (default: 'hey agent').",
+    )
+    parser.add_argument(
+        "--picovoice-key",
+        type=str,
+        default="",
+        dest="picovoice_key",
+        help="Picovoice access key for porcupine wake word (get free at picovoice.ai/console).",
     )
 
     # ---- Gesture mode ----
@@ -471,16 +533,24 @@ def main():
     )
 
     # ---- Voice input setup ----
-    global _voice_input
-    if args.voice:
+    global _voice_input, _narrator, _wake_listener
+    need_tts = args.tts or args.narrate or args.wake_word
+    if args.voice or args.wake_word or args.narrate:
         from gui_agents.voice_gesture.voice_input import VoiceInput
         _voice_input = VoiceInput(
-            tts=args.tts,
+            tts=need_tts,
             whisper_model=args.whisper_model,
         )
-        print("🎙️  Voice mode enabled. Speak your task when prompted.")
-        if args.tts:
+        if args.voice:
+            print("🎙️  Voice mode enabled. Speak your task when prompted.")
+        if need_tts:
             print("🔊  Text-to-speech enabled.")
+
+    # ---- Narrator setup ----
+    if args.narrate and _voice_input:
+        from gui_agents.voice_gesture.narrator import Narrator
+        _narrator = Narrator(_voice_input, verbosity=args.narrate_verbosity)
+        print(f"📢  Screen narration enabled (verbosity: {args.narrate_verbosity}).")
 
     # ---- Gesture control setup ----
     global _gesture_ctrl
@@ -496,19 +566,52 @@ def main():
 
     task = args.task
 
+    # ---- Wake word setup ----
+    # Wake word puts heard tasks onto _wake_task_queue; the main loop drains it.
+    if args.wake_word:
+        from gui_agents.voice_gesture.wake_word import WakeWordListener
+
+        def _on_wake():
+            if _voice_input:
+                _voice_input.speak("I'm listening.")
+            spoken = _voice_input.listen(prompt="Speak your task now…") if _voice_input else None
+            if spoken:
+                print(f"\n🗣  Wake task: {spoken}")
+                _wake_task_queue.put(spoken)
+
+        _wake_listener = WakeWordListener(
+            on_wake=_on_wake,
+            phrase=args.wake_phrase,
+            access_key=args.picovoice_key,
+        )
+        _wake_listener.start()
+        print(f'🎤  Wake word active — say "{args.wake_phrase}" anytime to give a task.')
+
     try:
-        # handle query from command line
+        # ---- Single task from --task flag ----
         if isinstance(task, str) and task.strip():
             agent.reset()
-            if _voice_input:
-                _voice_input.speak(f"Starting task: {task}")
             run_agent(agent, task, scaled_width, scaled_height)
-            if _voice_input:
-                _voice_input.speak("Task finished.")
-            return
+            # After one-shot task, drop into wake-word loop if enabled
+            if not args.wake_word:
+                return
 
+        # ---- Main interaction loop ----
         while True:
-            if args.voice and _voice_input:
+            # Priority: wake-word queue → voice listen → keyboard
+            if args.wake_word:
+                print("\n⏳  Waiting for wake word or Ctrl+C to quit…")
+                try:
+                    # Block until a task arrives via wake word (check every 0.5s)
+                    while True:
+                        try:
+                            query = _wake_task_queue.get(timeout=0.5)
+                            break
+                        except _queue.Empty:
+                            continue
+                except KeyboardInterrupt:
+                    break
+            elif args.voice and _voice_input:
                 query = _voice_input.listen(prompt="Say your task…")
                 if not query:
                     print("No speech detected, try again.")
@@ -517,22 +620,23 @@ def main():
                 query = input("Query: ")
 
             agent.reset()
-
-            if _voice_input:
-                _voice_input.speak(f"Starting: {query}")
-
             run_agent(agent, query, scaled_width, scaled_height)
 
-            if _voice_input:
-                _voice_input.speak("Task finished. Say another task or say quit.")
-                cont = _voice_input.listen(prompt="Say 'yes' to continue or 'quit' to stop…")
-                if cont and "quit" in cont.lower():
-                    break
-            else:
-                response = input("Would you like to provide another query? (y/n): ")
-                if response.lower() != "y":
-                    break
+            # In wake-word mode loop forever; otherwise ask to continue
+            if not args.wake_word:
+                if _voice_input and args.voice:
+                    _voice_input.speak("Task finished. Say another task or say quit.")
+                    cont = _voice_input.listen(prompt="Say 'yes' to continue or 'quit' to stop…")
+                    if cont and "quit" in cont.lower():
+                        break
+                else:
+                    response = input("Would you like to provide another query? (y/n): ")
+                    if response.lower() != "y":
+                        break
+
     finally:
+        if _wake_listener:
+            _wake_listener.stop()
         if _gesture_ctrl:
             _gesture_ctrl.stop()
         if _voice_input:

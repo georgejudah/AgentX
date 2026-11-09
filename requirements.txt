@@ -22,11 +22,16 @@ pyobjc; platform_system == "Darwin"
 pywinauto; platform_system == "Windows"
 pywin32; platform_system == "Windows"
 
-# Voice mode (optional — install to enable --voice and --tts)
+# Voice mode (optional — install to enable --voice / --tts / --narrate)
 SpeechRecognition
 pyaudio
 pyttsx3
 openai-whisper  # offline STT fallback
+
+# Wake word (optional — install to enable --wake-word)
+# Backend priority: pvporcupine (best, free key at picovoice.ai) > vosk > SR fallback
+pvporcupine     # ultra-low CPU always-on wake word
+vosk            # fully offline fallback (downloads ~50 MB model on first run)
 
 # Gesture mode (optional — install to enable --gesture)
 mediapipe
