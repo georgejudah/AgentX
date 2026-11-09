@@ -154,6 +154,33 @@ When enabled, the agent can use the `call_code_agent` action to execute code blo
 - Consider running in a sandboxed environment for untrusted tasks
 - Bash scripts are executed with a 30-second timeout to prevent hanging processes
 
+#### Hands-free mode and control center (AgentX)
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="../../images/agentx/hero-dark.png">
+    <img src="../../images/agentx/hero-light.png" alt="AgentX control center" width="720">
+  </picture>
+</p>
+
+Add any of these flags to the `agent_s` command, or run `./agentx.sh` from the repo root to turn them all on using settings from `.env`:
+
+| Flag | Effect |
+|---|---|
+| `--ui` / `--ui-port 8765` / `--ui-no-open` | Serve the control center on 127.0.0.1 and take tasks from it |
+| `--wake-word` / `--wake-phrase "hey agent"` / `--picovoice-key KEY` | Always-on wake word |
+| `--voice` / `--tts` / `--whisper-model base` | Speak tasks instead of typing; spoken replies |
+| `--narrate` / `--narrate-verbosity full\|action\|minimal` | Fast spoken narration of each action |
+| `--vision-narrate` | The model describes what changed on screen after each step |
+| `--gesture` / `--camera 0` / `--gesture-preview` | Webcam gestures: open palm pause, fist resume, thumbs down cancel |
+| `--openrouter-key KEY` | Use OpenRouter without setting the provider and URL by hand |
+
+<p align="center">
+  <img src="../../images/agentx/live-light.png" alt="Control center live view" width="720">
+</p>
+
+Optional dependencies for these features are listed at the bottom of `requirements.txt`.
+
 ### `gui_agents` SDK
 
 First, we import the necessary modules. `AgentS3` is the main agent class for Agent S3. `OSWorldACI` is our grounding agent that translates agent actions into executable python code.

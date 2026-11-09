@@ -43,6 +43,52 @@
 
 **Agent S** is an open-source computer use agent framework from [Simular](https://www.simular.ai). Give it a task in plain English. It looks at the screen and completes the task by clicking, typing, and scrolling in ordinary desktop and web apps. It runs on macOS, Windows, and Linux.
 
+## 🖐️ AgentX: hands-free mode and control center
+
+AgentX adds hands-free control on top of Agent S3. Say "hey agent", show a hand gesture, or type into the control center, and the agent works in any app while describing each step aloud.
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="images/agentx/hero-dark.png">
+    <img src="images/agentx/hero-light.png" alt="AgentX control center: Your computer. Hands-free." width="880">
+  </picture>
+</p>
+
+<p align="center">
+  <img src="images/agentx/live-light.png" alt="Live view: current task with step progress, narration feed, queue, voice, gesture, model and daily stats" width="880">
+</p>
+
+<table>
+  <tr>
+    <td width="40%"><img src="images/agentx/history-dark.png" alt="Task history timeline"></td>
+    <td width="40%"><img src="images/agentx/gestures-dark.png" alt="Gesture reference"></td>
+    <td width="20%"><img src="images/agentx/phone-dark.png" alt="Control center on a phone-sized screen"></td>
+  </tr>
+  <tr>
+    <td align="center">History</td>
+    <td align="center">Gestures</td>
+    <td align="center">Phone layout</td>
+  </tr>
+</table>
+
+| Feature | What it does | Flag |
+|---|---|---|
+| Wake word | Always listening for "hey agent" (Porcupine, Vosk or Google STT) | `--wake-word` |
+| Vision narration | The model compares before/after screenshots and describes each step aloud | `--vision-narrate` |
+| Task chaining | "First do X, then Y, then Z" runs as a queue | on by default |
+| Gestures | Webcam hand gestures: open palm pauses, fist resumes, thumbs down cancels | `--gesture` |
+| Control center | Live web UI with task bar, narration, queue, history, light and dark mode | `--ui` |
+| OpenRouter | One flag to use any OpenRouter model | `--openrouter-key` |
+
+**Run everything with one command:**
+
+```bash
+cp .env.example .env   # add your model and grounding settings
+./agentx.sh
+```
+
+The control center opens at `http://127.0.0.1:8765`. It only accepts connections from your own computer, and the startup link carries a one-time session token, so other websites can't send it tasks. Task history is kept locally in `~/.agentx/history.jsonl`.
+
 ## 🥳 Updates
 - [x] **2026/10/20**: Released **[Agent S4](./agent_s4/README.md)** and its paper ["Evolving Agent Interfaces"](https://arxiv.org/abs/2610.28601): an autonomous computer-use scientist that evolves the interfaces its agents work through from task experience. With Qwen3.8-27B, Agent S4 sets a new open-source state of the art on OSWorld V2 at **21.3%**, 3.8 times the same model with fixed interfaces and above GPT-5.5 (13.0%) and Claude Opus 4.8 (20.6%) at a fraction of their cost. *(OSWorld V2 is scored as a strict binary pass/fail with no partial credit, so 21.3% reflects benchmark difficulty, not low reliability — see the [Agent S4 README](./agent_s4/README.md) for details.)*
 - [x] **2026/10/01**: The **[Simular API](https://platform.simular.ai/)** is live. Build your always-on computer agents in a minute. Simular Platform is an autonomous computer API for building always-on agents that fit your needs. World-leading agent infrastructure, 90% token saving. [Get an API key →](https://platform.simular.ai/)
