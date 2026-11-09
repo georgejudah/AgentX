@@ -25,7 +25,9 @@ paused = False
 _voice_input = None
 _gesture_ctrl = None
 _narrator = None
+_vision_narrator = None
 _wake_listener = None
+_task_queue = None
 
 # Queue for tasks issued via wake word
 import queue as _queue
@@ -196,14 +198,31 @@ def _handle_gesture_commands():
         cmd = _gesture_ctrl.get_command(timeout=0)
 
 
-def run_agent(agent, instruction: str, scaled_width: int, scaled_height: int):
-    global paused, _narrator
+def run_agent(
+    agent,
+    instruction: str,
+    scaled_width: int,
+    scaled_height: int,
+    task_index: int = 1,
+    task_total: int = 1,
+):
+    global paused, _narrator, _vision_narrator
     obs = {}
     traj = "Task:\n" + instruction
     subtask_traj = ""
 
-    if _narrator:
+    # Announce start, with task position if chaining
+    if task_total > 1:
+        prefix = f"Task {task_index} of {task_total}: "
+        print(f"\n📌  {prefix}{instruction}")
+        if _narrator:
+            _narrator._say(f"{prefix}{instruction}")
+        elif _vision_narrator:
+            _vision_narrator._voice.speak(f"{prefix}{instruction}")
+    elif _narrator:
         _narrator.announce_start(instruction)
+    elif _vision_narrator:
+        _vision_narrator._voice.speak(f"Starting: {instruction}")
 
     for step in range(15):
         # Check gesture queue each step
@@ -225,6 +244,10 @@ def run_agent(agent, instruction: str, scaled_width: int, scaled_height: int):
         # Convert to base64 string.
         obs["screenshot"] = screenshot_bytes
 
+        # Vision narrator: capture before-screenshot
+        if _vision_narrator:
+            _vision_narrator.set_before(screenshot_bytes)
+
         # Check again for pause state before prediction
         while paused:
             time.sleep(0.1)
@@ -234,7 +257,7 @@ def run_agent(agent, instruction: str, scaled_width: int, scaled_height: int):
         # Get next action code from the agent
         info, code = agent.predict(instruction=instruction, observation=obs)
 
-        # Narrate what the agent is about to do
+        # Regex narrator (immediate, no latency)
         if _narrator:
             _narrator.announce_step(step, info, code)
 
@@ -244,6 +267,11 @@ def run_agent(agent, instruction: str, scaled_width: int, scaled_height: int):
                     _narrator.announce_fail()
                 else:
                     _narrator.announce_done(instruction)
+            elif _vision_narrator:
+                if "fail" in code[0].lower():
+                    _vision_narrator.narrate_fail()
+                else:
+                    _vision_narrator.narrate_done()
             if platform.system() == "Darwin":
                 os.system(
                     f'osascript -e \'display dialog "Task Completed" with title "OpenACI Agent" buttons "OK" default button "OK"\''
@@ -273,9 +301,17 @@ def run_agent(agent, instruction: str, scaled_width: int, scaled_height: int):
             while paused:
                 time.sleep(0.1)
 
-            # Ask for permission before executing
+            # Execute action
             exec(code[0])
             time.sleep(1.0)
+
+            # Vision narrator: capture after-screenshot and enqueue narration job
+            if _vision_narrator:
+                after_shot = pyautogui.screenshot()
+                after_shot = after_shot.resize((scaled_width, scaled_height), Image.LANCZOS)
+                after_buf = io.BytesIO()
+                after_shot.save(after_buf, format="PNG")
+                _vision_narrator.narrate_step(step, code, after_buf.getvalue())
 
             # Update task and subtask trajectories
             if "reflection" in info and "executor_plan" in info:
@@ -400,7 +436,7 @@ def main():
         "--narrate",
         action="store_true",
         default=False,
-        help="Speak every step the agent takes aloud (requires --tts).",
+        help="Speak every step the agent takes aloud using fast regex narration (requires --tts).",
     )
     parser.add_argument(
         "--narrate-verbosity",
@@ -409,6 +445,16 @@ def main():
         dest="narrate_verbosity",
         choices=["full", "action", "minimal"],
         help="Narration detail level: full (reflection+action), action, or minimal.",
+    )
+    parser.add_argument(
+        "--vision-narrate",
+        action="store_true",
+        default=False,
+        dest="vision_narrate",
+        help=(
+            "Use the LLM to describe what visually changed on screen after each step "
+            "(richer than --narrate; runs async so it never blocks; requires --tts)."
+        ),
     )
     parser.add_argument(
         "--whisper-model",
@@ -533,9 +579,9 @@ def main():
     )
 
     # ---- Voice input setup ----
-    global _voice_input, _narrator, _wake_listener
-    need_tts = args.tts or args.narrate or args.wake_word
-    if args.voice or args.wake_word or args.narrate:
+    global _voice_input, _narrator, _vision_narrator, _wake_listener, _task_queue
+    need_tts = args.tts or args.narrate or args.vision_narrate or args.wake_word
+    if args.voice or args.wake_word or args.narrate or args.vision_narrate:
         from gui_agents.voice_gesture.voice_input import VoiceInput
         _voice_input = VoiceInput(
             tts=need_tts,
@@ -546,11 +592,27 @@ def main():
         if need_tts:
             print("🔊  Text-to-speech enabled.")
 
-    # ---- Narrator setup ----
+    # ---- Regex narrator setup ----
     if args.narrate and _voice_input:
         from gui_agents.voice_gesture.narrator import Narrator
         _narrator = Narrator(_voice_input, verbosity=args.narrate_verbosity)
-        print(f"📢  Screen narration enabled (verbosity: {args.narrate_verbosity}).")
+        print(f"📢  Narration enabled (verbosity: {args.narrate_verbosity}).")
+
+    # ---- Vision narrator setup ----
+    if args.vision_narrate and _voice_input:
+        from gui_agents.voice_gesture.vision_narrator import VisionNarrator
+        _vision_narrator = VisionNarrator(
+            engine_params=engine_params,
+            voice=_voice_input,
+            fallback_narrator=_narrator,  # speaks regex description immediately while vision catches up
+        )
+        _vision_narrator.start()
+        print("👁️  Vision narration enabled — LLM describes each step from screenshots.")
+
+    # ---- Task queue setup ----
+    _task_queue = None
+    from gui_agents.voice_gesture.task_queue import TaskQueue
+    _task_queue = TaskQueue(engine_params=engine_params)
 
     # ---- Gesture control setup ----
     global _gesture_ctrl
@@ -567,7 +629,6 @@ def main():
     task = args.task
 
     # ---- Wake word setup ----
-    # Wake word puts heard tasks onto _wake_task_queue; the main loop drains it.
     if args.wake_word:
         from gui_agents.voice_gesture.wake_word import WakeWordListener
 
@@ -587,12 +648,28 @@ def main():
         _wake_listener.start()
         print(f'🎤  Wake word active — say "{args.wake_phrase}" anytime to give a task.')
 
+    def _run_task_queue():
+        """Drain _task_queue, running each task with position announcements."""
+        total = _task_queue.size()
+        while not _task_queue.empty():
+            task_text, idx, full_total = _task_queue.next()
+            agent.reset()
+            run_agent(
+                agent, task_text, scaled_width, scaled_height,
+                task_index=idx, task_total=full_total,
+            )
+        # After all tasks speak a summary if chaining
+        if total > 1:
+            msg = f"All {total} tasks complete."
+            print(f"\n✅  {msg}")
+            if _voice_input:
+                _voice_input.speak(msg)
+
     try:
         # ---- Single task from --task flag ----
         if isinstance(task, str) and task.strip():
-            agent.reset()
-            run_agent(agent, task, scaled_width, scaled_height)
-            # After one-shot task, drop into wake-word loop if enabled
+            _task_queue.enqueue(task)
+            _run_task_queue()
             if not args.wake_word:
                 return
 
@@ -602,7 +679,6 @@ def main():
             if args.wake_word:
                 print("\n⏳  Waiting for wake word or Ctrl+C to quit…")
                 try:
-                    # Block until a task arrives via wake word (check every 0.5s)
                     while True:
                         try:
                             query = _wake_task_queue.get(timeout=0.5)
@@ -619,13 +695,14 @@ def main():
             else:
                 query = input("Query: ")
 
-            agent.reset()
-            run_agent(agent, query, scaled_width, scaled_height)
+            # Parse for multi-task chaining, then run queue
+            _task_queue.enqueue(query)
+            _run_task_queue()
 
             # In wake-word mode loop forever; otherwise ask to continue
             if not args.wake_word:
                 if _voice_input and args.voice:
-                    _voice_input.speak("Task finished. Say another task or say quit.")
+                    _voice_input.speak("Done. Say another task or say quit.")
                     cont = _voice_input.listen(prompt="Say 'yes' to continue or 'quit' to stop…")
                     if cont and "quit" in cont.lower():
                         break
@@ -637,6 +714,8 @@ def main():
     finally:
         if _wake_listener:
             _wake_listener.stop()
+        if _vision_narrator:
+            _vision_narrator.stop()
         if _gesture_ctrl:
             _gesture_ctrl.stop()
         if _voice_input:

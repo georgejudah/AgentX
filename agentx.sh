@@ -40,6 +40,7 @@ AGENTX_GROUNDING_WIDTH="${AGENTX_GROUNDING_WIDTH:-1920}"
 AGENTX_GROUNDING_HEIGHT="${AGENTX_GROUNDING_HEIGHT:-1080}"
 AGENTX_WAKE_PHRASE="${AGENTX_WAKE_PHRASE:-hey agent}"
 AGENTX_CAMERA="${AGENTX_CAMERA:-0}"
+AGENTX_NARRATE_VERBOSITY="${AGENTX_NARRATE_VERBOSITY:-full}"
 PICOVOICE_ACCESS_KEY="${PICOVOICE_ACCESS_KEY:-}"
 
 # ── OpenRouter shorthand ──────────────────────────────────────────────────────
@@ -73,9 +74,10 @@ echo "  Wake word: \"${AGENTX_WAKE_PHRASE}\""
 echo "  Camera   : /dev/video${AGENTX_CAMERA}"
 echo ""
 echo "  Features active:"
-echo "    🎤  Wake word  — say \"${AGENTX_WAKE_PHRASE}\" to give a task"
-echo "    📢  Narration  — agent speaks every step aloud"
-echo "    ✋  Gestures   — open palm=PAUSE | fist=RESUME | 👍=APPROVE | 👎=CANCEL"
+echo "    🎤  Wake word     — say \"${AGENTX_WAKE_PHRASE}\" to give a task"
+echo "    👁️  Vision narrate — LLM describes each step from screenshots"
+echo "    📋  Task chaining  — say 'first X, then Y, then Z' for multi-task"
+echo "    ✋  Gestures      — open palm=PAUSE | fist=RESUME | 👍=APPROVE | 👎=CANCEL"
 echo ""
 echo "  Press Ctrl+C to quit."
 echo ""
@@ -93,12 +95,12 @@ python -m gui_agents.s3.cli_app \
     --ground_api_key  "${AGENTX_GROUND_API_KEY}"   \
     --grounding_width  "${AGENTX_GROUNDING_WIDTH}" \
     --grounding_height "${AGENTX_GROUNDING_HEIGHT}"\
-    --wake-word                                     \
-    --wake-phrase     "${AGENTX_WAKE_PHRASE}"      \
-    --narrate                                       \
-    --narrate-verbosity full                        \
-    --tts                                           \
-    --gesture                                       \
+    --wake-word                                         \
+    --wake-phrase       "${AGENTX_WAKE_PHRASE}"        \
+    --vision-narrate                                    \
+    --narrate-verbosity "${AGENTX_NARRATE_VERBOSITY}"  \
+    --tts                                               \
+    --gesture                                           \
     --camera          "${AGENTX_CAMERA}"           \
     --enable_reflection                             \
     ${PICOVOICE_ARG}                                \
