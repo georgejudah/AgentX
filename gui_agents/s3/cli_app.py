@@ -8,13 +8,15 @@ import pyautogui
 import signal
 import sys
 import time
-from typing import Optional
+import uuid
 
 from PIL import Image
 
 from gui_agents.s3.agents.grounding import OSWorldACI
 from gui_agents.s3.agents.agent_s import AgentS3
 from gui_agents.s3.utils.local_env import LocalEnv
+from gui_agents.ui.events import bus
+from gui_agents.voice_gesture.narrator import _code_to_speech
 
 current_platform = platform.system().lower()
 
@@ -165,37 +167,74 @@ def scale_screen_dimensions(width: int, height: int, max_dim_size: int):
     return safe_width, safe_height
 
 
+MAX_STEPS = 15
+
+
+class TaskCancelled(Exception):
+    pass
+
+
+_cancel_requested = False
+
+
+def _set_paused(value: bool):
+    global paused
+    if paused == value:
+        return
+    paused = value
+    bus.publish("status", state="paused" if value else "working")
+
+
+def _check_cancel():
+    global _cancel_requested
+    if _cancel_requested:
+        _cancel_requested = False
+        raise TaskCancelled()
+
+
 def _handle_gesture_commands():
     """Poll gesture queue and apply any pending gesture commands."""
-    global paused, _gesture_ctrl, _narrator
     if _gesture_ctrl is None:
         return
     from gui_agents.voice_gesture.gesture_control import GestureCommand
 
     cmd = _gesture_ctrl.get_command(timeout=0)
     while cmd is not None:
+        bus.publish("gesture", name=cmd.name)
         if cmd == GestureCommand.PAUSE_AGENT:
             if not paused:
                 print("\n✋ Gesture: PAUSED")
-                paused = True
+                _set_paused(True)
                 if _narrator:
                     _narrator.announce_pause()
         elif cmd == GestureCommand.RESUME_AGENT:
             if paused:
                 print("\n✊ Gesture: RESUMED")
-                paused = False
+                _set_paused(False)
         elif cmd == GestureCommand.APPROVE_ACTION:
             print("\n👍 Gesture: APPROVE (continuing…)")
         elif cmd == GestureCommand.CANCEL_TASK:
             print("\n👎 Gesture: CANCEL — stopping task.")
-            if _narrator:
-                _narrator.announce_cancel()
-            raise KeyboardInterrupt("Gesture cancel")
+            raise TaskCancelled()
         elif cmd == GestureCommand.NEXT_STEP:
             print("\n☝️  Gesture: NEXT STEP")
         elif cmd == GestureCommand.SCREENSHOT:
             print("\n✌️  Gesture: SCREENSHOT requested")
         cmd = _gesture_ctrl.get_command(timeout=0)
+
+
+def _wait_while_paused():
+    while paused:
+        _handle_gesture_commands()
+        _check_cancel()
+        time.sleep(0.1)
+
+
+def _capture(scaled_width: int, scaled_height: int) -> bytes:
+    shot = pyautogui.screenshot().resize((scaled_width, scaled_height), Image.LANCZOS)
+    buf = io.BytesIO()
+    shot.save(buf, format="PNG")
+    return buf.getvalue()
 
 
 def run_agent(
@@ -206,72 +245,81 @@ def run_agent(
     task_index: int = 1,
     task_total: int = 1,
 ):
-    global paused, _narrator, _vision_narrator
-    obs = {}
-    traj = "Task:\n" + instruction
-    subtask_traj = ""
+    global _cancel_requested
+    _cancel_requested = False
+    task_id = uuid.uuid4().hex[:8]
+    started = time.time()
+    bus.publish(
+        "task_started", id=task_id, instruction=instruction,
+        index=task_index, total=task_total, max_steps=MAX_STEPS,
+    )
 
-    # Announce start, with task position if chaining
     if task_total > 1:
         prefix = f"Task {task_index} of {task_total}: "
         print(f"\n📌  {prefix}{instruction}")
-        if _narrator:
-            _narrator._say(f"{prefix}{instruction}")
-        elif _vision_narrator:
-            _vision_narrator._voice.speak(f"{prefix}{instruction}")
+        if _voice_input and (_narrator or _vision_narrator):
+            _voice_input.speak(f"{prefix}{instruction}")
     elif _narrator:
         _narrator.announce_start(instruction)
     elif _vision_narrator:
-        _vision_narrator._voice.speak(f"Starting: {instruction}")
+        _voice_input.speak(f"Starting: {instruction}")
 
-    for step in range(15):
-        # Check gesture queue each step
+    result, steps = "stopped", 0
+    try:
+        result, steps = _run_steps(agent, instruction, scaled_width, scaled_height)
+    except TaskCancelled:
+        result = "cancelled"
+        print("\n🛑 Task cancelled.")
+        if _narrator:
+            _narrator.announce_cancel()
+        elif _voice_input:
+            _voice_input.speak("Task cancelled.")
+    finally:
+        _set_paused(False)
+        bus.publish(
+            "task_finished", id=task_id, instruction=instruction, result=result,
+            steps=steps, duration=round(time.time() - started, 1),
+        )
+        bus.publish("status", state="idle")
+    return result
+
+
+def _run_steps(agent, instruction: str, scaled_width: int, scaled_height: int):
+    obs = {}
+    traj = "Task:\n" + instruction
+
+    for step in range(MAX_STEPS):
         _handle_gesture_commands()
-        # Check if we're in paused state and wait
-        while paused:
-            _handle_gesture_commands()
-            time.sleep(0.1)
-        # Get screen shot using pyautogui
-        screenshot = pyautogui.screenshot()
-        screenshot = screenshot.resize((scaled_width, scaled_height), Image.LANCZOS)
+        _check_cancel()
+        _wait_while_paused()
 
-        # Save the screenshot to a BytesIO object
-        buffered = io.BytesIO()
-        screenshot.save(buffered, format="PNG")
-
-        # Get the byte value of the screenshot
-        screenshot_bytes = buffered.getvalue()
-        # Convert to base64 string.
+        screenshot_bytes = _capture(scaled_width, scaled_height)
         obs["screenshot"] = screenshot_bytes
-
-        # Vision narrator: capture before-screenshot
         if _vision_narrator:
             _vision_narrator.set_before(screenshot_bytes)
 
-        # Check again for pause state before prediction
-        while paused:
-            time.sleep(0.1)
+        _wait_while_paused()
+        print(f"\n🔄 Step {step + 1}/{MAX_STEPS}: Getting next action from agent...")
 
-        print(f"\n🔄 Step {step + 1}/15: Getting next action from agent...")
-
-        # Get next action code from the agent
         info, code = agent.predict(instruction=instruction, observation=obs)
+        _check_cancel()
 
-        # Regex narrator (immediate, no latency)
+        action_text = _code_to_speech(code[0])
+        bus.publish("step", step=step + 1, action=action_text, code=code[0][:500])
         if _narrator:
             _narrator.announce_step(step, info, code)
+        elif not _vision_narrator and action_text:
+            bus.publish("narration", text=f"Step {step + 1}: {action_text}.")
 
-        if "done" in code[0].lower() or "fail" in code[0].lower():
+        lowered = code[0].lower()
+        if "done" in lowered or "fail" in lowered:
+            failed = "fail" in lowered
             if _narrator:
-                if "fail" in code[0].lower():
-                    _narrator.announce_fail()
-                else:
-                    _narrator.announce_done(instruction)
+                _narrator.announce_fail() if failed else _narrator.announce_done(instruction)
             elif _vision_narrator:
-                if "fail" in code[0].lower():
-                    _vision_narrator.narrate_fail()
-                else:
-                    _vision_narrator.narrate_done()
+                _vision_narrator.narrate_fail() if failed else _vision_narrator.narrate_done()
+            else:
+                bus.publish("narration", text="Couldn't complete the task." if failed else "Task complete.")
             if platform.system() == "Darwin":
                 os.system(
                     f'osascript -e \'display dialog "Task Completed" with title "OpenACI Agent" buttons "OK" default button "OK"\''
@@ -280,47 +328,38 @@ def run_agent(
                 os.system(
                     f'zenity --info --title="OpenACI Agent" --text="Task Completed" --width=200 --height=100'
                 )
+            return ("failed" if failed else "done"), step + 1
 
-            break
-
-        if "next" in code[0].lower():
+        if "next" in lowered:
             continue
 
-        if "wait" in code[0].lower():
+        if "wait" in lowered:
             print("⏳ Agent requested wait...")
             if _narrator:
                 _narrator.announce_wait()
             time.sleep(5)
             continue
 
-        else:
-            time.sleep(1.0)
-            print("EXECUTING CODE:", code[0])
+        time.sleep(1.0)
+        print("EXECUTING CODE:", code[0])
+        _wait_while_paused()
+        _check_cancel()
 
-            # Check for pause state before execution
-            while paused:
-                time.sleep(0.1)
+        exec(code[0])
+        time.sleep(1.0)
 
-            # Execute action
-            exec(code[0])
-            time.sleep(1.0)
+        if _vision_narrator:
+            _vision_narrator.narrate_step(step, code, _capture(scaled_width, scaled_height))
 
-            # Vision narrator: capture after-screenshot and enqueue narration job
-            if _vision_narrator:
-                after_shot = pyautogui.screenshot()
-                after_shot = after_shot.resize((scaled_width, scaled_height), Image.LANCZOS)
-                after_buf = io.BytesIO()
-                after_shot.save(after_buf, format="PNG")
-                _vision_narrator.narrate_step(step, code, after_buf.getvalue())
+        if "reflection" in info and "executor_plan" in info:
+            traj += (
+                "\n\nReflection:\n"
+                + str(info["reflection"])
+                + "\n\n----------------------\n\nPlan:\n"
+                + info["executor_plan"]
+            )
 
-            # Update task and subtask trajectories
-            if "reflection" in info and "executor_plan" in info:
-                traj += (
-                    "\n\nReflection:\n"
-                    + str(info["reflection"])
-                    + "\n\n----------------------\n\nPlan:\n"
-                    + info["executor_plan"]
-                )
+    return "stopped", MAX_STEPS
 
 
 def main():
@@ -518,6 +557,28 @@ def main():
         help="OpenRouter API key (shorthand; sets --provider open_router and fills --model_api_key).",
     )
 
+    # ---- Web UI ----
+    parser.add_argument(
+        "--ui",
+        action="store_true",
+        default=False,
+        help="Serve the AgentX control center at http://127.0.0.1:<ui-port> and take tasks from it.",
+    )
+    parser.add_argument(
+        "--ui-port",
+        type=int,
+        default=8765,
+        dest="ui_port",
+        help="Port for the web UI (default 8765).",
+    )
+    parser.add_argument(
+        "--ui-no-open",
+        action="store_true",
+        default=False,
+        dest="ui_no_open",
+        help="Don't open the web UI in a browser automatically.",
+    )
+
     args = parser.parse_args()
 
     # OpenRouter shorthand: set provider + key automatically
@@ -633,9 +694,14 @@ def main():
         from gui_agents.voice_gesture.wake_word import WakeWordListener
 
         def _on_wake():
+            idle = bus.state["task"] is None
+            if idle:
+                bus.publish("status", state="listening")
             if _voice_input:
                 _voice_input.speak("I'm listening.")
             spoken = _voice_input.listen(prompt="Speak your task now…") if _voice_input else None
+            if idle and bus.state["task"] is None:
+                bus.publish("status", state="idle")
             if spoken:
                 print(f"\n🗣  Wake task: {spoken}")
                 _wake_task_queue.put(spoken)
@@ -647,6 +713,47 @@ def main():
         )
         _wake_listener.start()
         print(f'🎤  Wake word active — say "{args.wake_phrase}" anytime to give a task.')
+
+    # ---- Web UI setup ----
+    bus.publish("config", config={
+        "provider": args.provider,
+        "model": args.model,
+        "ground_model": args.ground_model,
+        "wake_phrase": args.wake_phrase,
+        "features": {
+            "wake_word": args.wake_word,
+            "voice": args.voice,
+            "vision_narrate": args.vision_narrate,
+            "narrate": args.narrate,
+            "gesture": args.gesture,
+            "tts": need_tts,
+        },
+    })
+    if _voice_input:
+        bus.publish("voice", state="idle")
+
+    if args.ui:
+        from gui_agents.ui.server import start_server
+
+        def _on_ui_command(name: str, payload: dict):
+            global _cancel_requested
+            if name == "submit":
+                _wake_task_queue.put(payload["text"])
+            elif name == "pause" and bus.state["task"]:
+                _set_paused(True)
+            elif name == "resume":
+                _set_paused(False)
+            elif name == "cancel" and bus.state["task"]:
+                _cancel_requested = True
+
+        bus.set_command_handler(_on_ui_command)
+        ui_url = start_server(port=args.ui_port)
+        print(f"🖥️  Control center: {ui_url}")
+        if not args.ui_no_open:
+            import webbrowser
+            webbrowser.open(ui_url)
+
+    queued_mode = args.wake_word or args.ui
 
     def _run_task_queue():
         """Drain _task_queue, running each task with position announcements."""
@@ -664,20 +771,23 @@ def main():
             print(f"\n✅  {msg}")
             if _voice_input:
                 _voice_input.speak(msg)
+            else:
+                bus.publish("narration", text=msg)
 
     try:
         # ---- Single task from --task flag ----
         if isinstance(task, str) and task.strip():
             _task_queue.enqueue(task)
             _run_task_queue()
-            if not args.wake_word:
+            if not queued_mode:
                 return
 
         # ---- Main interaction loop ----
         while True:
-            # Priority: wake-word queue → voice listen → keyboard
-            if args.wake_word:
-                print("\n⏳  Waiting for wake word or Ctrl+C to quit…")
+            # Priority: wake word / UI queue → voice listen → keyboard
+            if queued_mode:
+                sources = [s for s, on in (("the wake word", args.wake_word), ("the web UI", args.ui)) if on]
+                print(f"\n⏳  Waiting for a task from {' or '.join(sources)} (Ctrl+C to quit)…")
                 try:
                     while True:
                         try:
@@ -699,8 +809,8 @@ def main():
             _task_queue.enqueue(query)
             _run_task_queue()
 
-            # In wake-word mode loop forever; otherwise ask to continue
-            if not args.wake_word:
+            # In queued mode loop forever; otherwise ask to continue
+            if not queued_mode:
                 if _voice_input and args.voice:
                     _voice_input.speak("Done. Say another task or say quit.")
                     cont = _voice_input.listen(prompt="Say 'yes' to continue or 'quit' to stop…")

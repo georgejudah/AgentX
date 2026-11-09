@@ -18,6 +18,7 @@ setup(
     author_email="eric@simular.ai",
     # agent_s4 is a separate distribution (agent_s4/pyproject.toml).
     packages=find_packages(include=["gui_agents", "gui_agents.*"]),
+    package_data={"gui_agents.ui": ["static/*"]},
     install_requires=[
         "numpy",
         "backoff",

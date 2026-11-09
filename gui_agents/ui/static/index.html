@@ -1,0 +1,178 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>AgentX</title>
+  <meta name="color-scheme" content="light dark">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap">
+  <link rel="stylesheet" href="/static/styles.css">
+  <script>
+    try {
+      var t = localStorage.getItem("agentx-theme");
+      if (t === "light" || t === "dark") document.documentElement.dataset.theme = t;
+    } catch (e) {}
+  </script>
+</head>
+<body>
+  <nav class="nav" aria-label="Primary">
+    <div class="nav-inner">
+      <a class="brand" href="#top">AgentX</a>
+      <ul class="nav-links">
+        <li><a href="#live">Live</a></li>
+        <li><a href="#history">History</a></li>
+        <li><a href="#gestures">Gestures</a></li>
+      </ul>
+      <div class="nav-right">
+        <span class="conn" id="conn" data-state="connecting"><i></i><span>Connecting</span></span>
+        <button class="icon-btn" id="theme-toggle" type="button" aria-label="Toggle light and dark mode">
+          <svg class="i-sun" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4.5"/><path d="M12 2v2.5M12 19.5V22M2 12h2.5M19.5 12H22M4.9 4.9l1.8 1.8M17.3 17.3l1.8 1.8M4.9 19.1l1.8-1.8M17.3 6.7l1.8-1.8"/></svg>
+          <svg class="i-moon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 14.5A8.5 8.5 0 0 1 9.5 4a8.5 8.5 0 1 0 10.5 10.5z"/></svg>
+        </button>
+      </div>
+    </div>
+  </nav>
+
+  <div class="banner" id="token-banner" hidden>
+    This page needs the link printed in your terminal when AgentX starts (it ends in <code>#token=…</code>).
+  </div>
+
+  <header class="hero" id="top">
+    <div class="orb-wrap" id="orb-wrap" aria-hidden="true"><div class="orb" id="orb" data-state="idle"></div></div>
+    <div class="hero-content" id="hero-content">
+      <p class="eyebrow fade-in" style="--d:0ms">AgentX</p>
+      <h1 class="hero-title fade-in" style="--d:120ms">Your computer.<br><span class="grad">Hands-free.</span></h1>
+      <p class="hero-sub fade-in" style="--d:260ms">Say it, sign it, or type it. AgentX looks at your screen and does the work, in any app.</p>
+      <form class="command fade-in" id="command-form" style="--d:400ms" autocomplete="off">
+        <label class="sr-only" for="command-input">Task</label>
+        <input id="command-input" type="text" maxlength="2000" placeholder="Tell AgentX what to do…">
+        <button class="icon-btn mic" id="mic-btn" type="button" aria-label="Speak a task" hidden>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21"/></svg>
+        </button>
+        <button class="btn-primary" type="submit">Run</button>
+      </form>
+      <div class="chips fade-in" style="--d:520ms">
+        <button class="chip" type="button" data-task="Open Chrome and show me today's weather">Today's weather</button>
+        <button class="chip" type="button" data-task="First open my calendar, then tell me my next meeting">Chain two tasks</button>
+        <button class="chip" type="button" data-task="Find the newest PDF in Downloads and open it">Newest PDF</button>
+      </div>
+      <p class="status-line fade-in" id="status-line" style="--d:620ms" aria-live="polite">Connecting to your agent…</p>
+    </div>
+  </header>
+
+  <main>
+    <section class="section" id="live">
+      <div class="section-head reveal">
+        <h2>Live.</h2>
+        <p>What the agent sees, decides and does, as it happens.</p>
+      </div>
+
+      <div class="bento">
+        <article class="tile tile-now reveal">
+          <p class="tile-label">Now</p>
+          <h3 class="now-task" id="now-task">Waiting for a task</h3>
+          <p class="muted" id="now-meta">Idle</p>
+          <div class="progress" role="progressbar" aria-label="Step progress" aria-valuemin="0" aria-valuemax="15" aria-valuenow="0" id="now-progress"><div id="now-bar"></div></div>
+          <p class="now-action" id="now-action"></p>
+          <div class="tile-actions">
+            <button class="btn-secondary" id="pause-btn" type="button" disabled>Pause</button>
+            <button class="btn-ghost danger" id="cancel-btn" type="button" disabled>Cancel task</button>
+          </div>
+        </article>
+
+        <article class="tile tile-feed reveal">
+          <p class="tile-label">Narration</p>
+          <ol class="feed" id="feed"></ol>
+          <p class="empty" id="feed-empty">Step-by-step narration shows up here.</p>
+        </article>
+
+        <article class="tile tile-queue reveal">
+          <p class="tile-label">Up next</p>
+          <ol class="queue" id="queue"></ol>
+          <p class="empty" id="queue-empty">Nothing queued. Try “first … then …”.</p>
+        </article>
+
+        <article class="tile tile-voice reveal">
+          <p class="tile-label">Voice</p>
+          <p class="big" id="voice-state">Off</p>
+          <p class="muted clamp" id="voice-heard"></p>
+        </article>
+
+        <article class="tile tile-gesture reveal">
+          <p class="tile-label">Gesture</p>
+          <p class="big" id="gesture-name">None yet</p>
+          <p class="muted" id="gesture-action"></p>
+        </article>
+
+        <article class="tile tile-model reveal">
+          <p class="tile-label">Model</p>
+          <p class="big" id="model-name">—</p>
+          <p class="muted" id="model-ground"></p>
+          <ul class="features" id="features"></ul>
+        </article>
+
+        <article class="tile tile-stats reveal">
+          <p class="tile-label">Today</p>
+          <div class="stats">
+            <div><span class="stat" id="stat-tasks">0</span><span class="stat-label">tasks</span></div>
+            <div><span class="stat" id="stat-rate">—</span><span class="stat-label">completed</span></div>
+            <div><span class="stat" id="stat-steps">—</span><span class="stat-label">avg. steps</span></div>
+          </div>
+        </article>
+      </div>
+    </section>
+
+    <section class="section narrow" id="history">
+      <div class="section-head reveal">
+        <h2>History.</h2>
+        <p>Every task, kept on this computer in <code>~/.agentx/history.jsonl</code>.</p>
+      </div>
+      <ol class="timeline" id="timeline"></ol>
+      <p class="empty center reveal" id="history-empty">No tasks yet. Your first one will appear here.</p>
+    </section>
+
+    <section class="section" id="gestures">
+      <div class="section-head reveal">
+        <h2>Six gestures.<br><span class="muted-strong">No keyboard.</span></h2>
+        <p>Hold one in front of your webcam. AgentX reacts within a second.</p>
+      </div>
+      <div class="gesture-grid">
+        <div class="g-tile reveal"><span class="g-action">Pause</span><span class="g-name">Open palm</span><span class="g-desc">All five fingers up.</span></div>
+        <div class="g-tile reveal"><span class="g-action">Resume</span><span class="g-name">Fist</span><span class="g-desc">All fingers folded.</span></div>
+        <div class="g-tile reveal"><span class="g-action">Approve</span><span class="g-name">Thumbs up</span><span class="g-desc">Confirm and keep going.</span></div>
+        <div class="g-tile reveal"><span class="g-action">Cancel</span><span class="g-name">Thumbs down</span><span class="g-desc">Stop the current task.</span></div>
+        <div class="g-tile reveal"><span class="g-action">Screenshot</span><span class="g-name">Peace sign</span><span class="g-desc">Index and middle up.</span></div>
+        <div class="g-tile reveal"><span class="g-action">Next</span><span class="g-name">Point up</span><span class="g-desc">Index finger only.</span></div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <div class="footer-inner">
+      <div class="footer-cols">
+        <div>
+          <h4>AgentX</h4>
+          <ul><li><a href="#live">Live</a></li><li><a href="#history">History</a></li><li><a href="#gestures">Gestures</a></li></ul>
+        </div>
+        <div>
+          <h4>Modes</h4>
+          <ul><li>Wake word</li><li>Vision narration</li><li>Task chaining</li><li>Gesture control</li></ul>
+        </div>
+        <div>
+          <h4>Resources</h4>
+          <ul>
+            <li><a href="https://github.com/georgejudah/AgentX" target="_blank" rel="noopener noreferrer">GitHub</a></li>
+            <li><a href="https://github.com/georgejudah/AgentX/blob/main/models.md" target="_blank" rel="noopener noreferrer">Supported models</a></li>
+            <li><a href="https://github.com/georgejudah/AgentX/blob/main/gui_agents/s3/README.md" target="_blank" rel="noopener noreferrer">Agent S3 docs</a></li>
+          </ul>
+        </div>
+      </div>
+      <p class="footer-note">This page is served from your own computer (127.0.0.1). Screenshots are sent only to the model provider you configured.</p>
+    </div>
+  </footer>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

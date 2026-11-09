@@ -12,6 +12,8 @@ import queue
 import threading
 from typing import Optional
 
+from gui_agents.ui.events import bus
+
 logger = logging.getLogger(__name__)
 
 # Lazy imports so the module loads even without optional deps installed.
@@ -119,6 +121,7 @@ class VoiceInput:
 
     def speak(self, text: str):
         """Queue text for speech output (non-blocking)."""
+        bus.publish("narration", text=text)
         if self.tts_enabled and self._tts_engine is not None:
             self._tts_queue.put(text)
         else:
@@ -147,6 +150,7 @@ class VoiceInput:
         Returns None if recognition failed.
         """
         sr = _import_sr()
+        bus.publish("voice", state="listening")
         with sr.Microphone() as source:
             print(f"\n🎙️  {prompt}")
             self._recognizer.adjust_for_ambient_noise(source, duration=0.5)
@@ -154,9 +158,12 @@ class VoiceInput:
                 audio = self._recognizer.listen(source, timeout=10, phrase_time_limit=30)
             except sr.WaitTimeoutError:
                 print("⏱  No speech detected (timeout).")
+                bus.publish("voice", state="idle")
                 return None
 
-        return self._transcribe(audio)
+        text = self._transcribe(audio)
+        bus.publish("voice", state="heard" if text else "idle", heard=text)
+        return text
 
     def _transcribe(self, audio) -> Optional[str]:
         sr = _import_sr()
